@@ -167,6 +167,15 @@ pub struct DrainStatus {
     pub detail: Option<String>,
 }
 
+/// Replay metadata carried atomically with an explicit announcement.
+#[doc(hidden)]
+pub struct AnnounceReplay {
+    pub dest_hash: [u8; 16],
+    pub name_hash: [u8; 10],
+    pub identity_prv_key: [u8; 64],
+    pub app_data: Option<Vec<u8>>,
+}
+
 /// Events sent to the driver thread.
 ///
 /// `W` is the writer type (e.g. `Box<dyn Writer>` for sync,
@@ -220,6 +229,13 @@ pub enum Event<W: Send> {
         raw: Vec<u8>,
         dest_type: u8,
         attached_interface: Option<InterfaceId>,
+    },
+    /// A locally originated packet with transmission completion tracking.
+    SendOutboundTracked {
+        raw: Vec<u8>,
+        dest_type: u8,
+        replay: Option<Box<AnnounceReplay>>,
+        completion: crate::link_send::Completion,
     },
     /// Register a local destination.
     RegisterDestination { dest_hash: [u8; 16], dest_type: u8 },
@@ -324,7 +340,16 @@ pub enum Event<W: Send> {
         payload: Vec<u8>,
         response_tx: mpsc::Sender<Result<(), String>>,
     },
-    /// Send generic data on a link with a given context.
+    /// Wake the driver after outbound writer capacity changes.
+    LinkWriterReady,
+    /// Send generic data on a link with transmission completion.
+    SendLinkTracked {
+        link_id: [u8; 16],
+        data: Vec<u8>,
+        context: u8,
+        completion: crate::link_send::Completion,
+    },
+    /// Legacy best-effort datagram admission, without transmission completion.
     SendOnLink {
         link_id: [u8; 16],
         data: Vec<u8>,
@@ -895,6 +920,10 @@ pub struct LocalDestinationEntry {
 #[derive(Debug, Clone)]
 pub struct LinkInfoEntry {
     pub link_id: [u8; 16],
+    /// Confirmed sends admitted locally but not yet fully written (including the current write).
+    pub pending_send_packets: usize,
+    /// Polled async sends waiting for local admission capacity.
+    pub waiting_send_packets: usize,
     pub state: String,
     pub is_initiator: bool,
     pub dest_hash: [u8; 16],
@@ -1022,7 +1051,8 @@ impl<W: Send> fmt::Debug for Event<W> {
                 .field("timeout", timeout)
                 .finish(),
             Event::Shutdown => write!(f, "Shutdown"),
-            Event::SendOutbound { raw, dest_type, .. } => f
+            Event::SendOutbound { raw, dest_type, .. }
+            | Event::SendOutboundTracked { raw, dest_type, .. } => f
                 .debug_struct("SendOutbound")
                 .field("raw_len", &raw.len())
                 .field("dest_type", dest_type)
@@ -1142,7 +1172,14 @@ impl<W: Send> fmt::Debug for Event<W> {
                 .field("msgtype", msgtype)
                 .field("payload_len", &payload.len())
                 .finish(),
+            Event::LinkWriterReady => f.write_str("LinkWriterReady"),
             Event::SendOnLink {
+                link_id,
+                data,
+                context,
+                ..
+            }
+            | Event::SendLinkTracked {
                 link_id,
                 data,
                 context,

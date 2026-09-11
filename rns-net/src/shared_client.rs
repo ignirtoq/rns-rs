@@ -136,6 +136,13 @@ impl RnsNode {
         };
 
         let writer = crate::interface::local::start_client(local_config, tx.clone())?;
+        let (writer, async_writer_metrics) = crate::interface::wrap_async_writer(
+            writer,
+            id,
+            &info.name,
+            tx.clone(),
+            driver.interface_writer_queue_capacity,
+        );
 
         driver.engine.register_interface(info.clone());
         driver.interfaces.insert(
@@ -144,7 +151,7 @@ impl RnsNode {
                 id,
                 info,
                 writer,
-                async_writer_metrics: None,
+                async_writer_metrics: Some(async_writer_metrics),
                 enabled: true,
                 online: false,
                 dynamic: false,
@@ -396,6 +403,13 @@ pub fn bench_shared_client_replay_once(
     };
 
     let writer = crate::interface::local::start_client(local_config, tx.clone())?;
+    let (writer, async_writer_metrics) = crate::interface::wrap_async_writer(
+        writer,
+        id,
+        &info.name,
+        tx.clone(),
+        driver.interface_writer_queue_capacity,
+    );
     driver.engine.register_interface(info.clone());
     driver.interfaces.insert(
         id,
@@ -403,7 +417,7 @@ pub fn bench_shared_client_replay_once(
             id,
             info,
             writer,
-            async_writer_metrics: None,
+            async_writer_metrics: Some(async_writer_metrics),
             enabled: true,
             online: false,
             dynamic: false,
@@ -685,7 +699,8 @@ mod tests {
         );
         node.register_destination(dest.hash.0, dest.dest_type.to_wire_constant())
             .unwrap();
-        node.announce(&dest, &identity, Some(b"hello")).unwrap();
+        node.announce_queued(&dest, &identity, Some(b"hello"))
+            .unwrap();
 
         let mut stream1 = accepted1_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         stream1

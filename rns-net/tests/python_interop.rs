@@ -574,7 +574,7 @@ fn python_rns_bidirectional_tcp_interop() {
     );
 
     let python_out = Destination::single_out(APP_NAME, &[PYTHON_ASPECT], &python_live_announce);
-    node.send_packet(&python_out, RUST_TO_PYTHON_PAYLOAD)
+    futures::executor::block_on(node.send_packet(&python_out, RUST_TO_PYTHON_PAYLOAD))
         .expect("Rust should send encrypted data to Python destination");
     let python_packet = python.wait_for_event(TIMEOUT, |event| {
         event["event"] == "python_packet" && event["data_hex"] == hex(RUST_TO_PYTHON_PAYLOAD)
@@ -598,7 +598,9 @@ fn python_rns_bidirectional_tcp_interop() {
     );
     assert_eq!(python_reannounce.app_data.as_deref(), Some(PYTHON_APP_DATA));
 
-    node.announce(&rust_dest, &rust_identity, Some(RUST_APP_DATA))
+    node.try_announce(&rust_dest, &rust_identity, Some(RUST_APP_DATA))
+        .expect("Rust announce should be admitted")
+        .wait()
         .expect("Rust announce should send to Python");
     let rust_announce = python.wait_for_event(TIMEOUT, |event| {
         event["event"] == "rust_announce"
@@ -648,8 +650,12 @@ fn python_rns_bidirectional_tcp_interop() {
     .expect("Rust should receive Python link data");
     assert_eq!(python_link_data, (0, b"python-to-rust over link".to_vec()));
 
-    node.send_on_link(link_id, b"rust-to-python over link".to_vec(), 0)
-        .expect("Rust should send data over the Python-initiated link");
+    futures::executor::block_on(node.send_on_link(
+        link_id,
+        b"rust-to-python over link".to_vec(),
+        0,
+    ))
+    .expect("Rust should send data over the Python-initiated link");
     let rust_link_data = python.wait_for_event(TIMEOUT, |event| {
         event["event"] == "python_link_packet"
             && event["context"] == 0
